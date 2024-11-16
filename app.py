@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import numpy as np
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import warnings
+import json
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -18,67 +19,134 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
-st.markdown("""
-    <style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-    }
-    .css-1v0mbdj.e115fcil1 {
-        width: 100%;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
 class HoldedAnalytics:
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://api.holded.com/api/v1"
         self.headers = {
-            "key": self.api_key,
+            "Authorization": f"Bearer {self.api_key}",  # Changed to Bearer token
             "Content-Type": "application/json"
         }
 
     def test_connection(self):
         """Test if the API key is valid"""
         try:
+            # Debug information
+            st.sidebar.write("Testing connection...")
+            
             response = requests.get(
-                f"{self.base_url}/invoices/sales",
-                headers=self.headers,
-                params={"limit": 1}
+                f"{self.base_url}/invoices",  # Changed endpoint
+                headers=self.headers
             )
+            
+            # Debug information
+            st.sidebar.write(f"Status Code: {response.status_code}")
+            st.sidebar.write(f"Response Headers: {dict(response.headers)}")
+            
+            if response.status_code == 401:
+                st.error("Authentication failed. Please check your API key.")
+                return False
+                
             return response.status_code == 200
-        except:
+            
+        except Exception as e:
+            st.error(f"Connection test error: {str(e)}")
             return False
 
     def get_sales_data(self, start_date, end_date):
         """Fetch sales data safely"""
         try:
+            # Debug information
+            st.sidebar.write("Fetching sales data...")
+            st.sidebar.write(f"Date range: {start_date} to {end_date}")
+            
+            # Format dates correctly
+            start = datetime.strptime(start_date, '%Y-%m-%d').strftime('%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d').strftime('%Y-%m-%d')
+            
             response = requests.get(
-                f"{self.base_url}/invoices/sales",
+                f"{self.base_url}/invoices",  # Changed endpoint
                 headers=self.headers,
                 params={
-                    "from": start_date,
-                    "to": end_date
+                    "dateFrom": start,
+                    "dateTo": end
                 }
             )
+            
+            # Debug information
+            st.sidebar.write(f"API Response Status: {response.status_code}")
+            
             if response.status_code == 200:
-                return response.json()
+                try:
+                    data = response.json()
+                    # Debug information
+                    st.sidebar.write(f"Records found: {len(data) if isinstance(data, list) else 'Not a list'}")
+                    return data
+                except json.JSONDecodeError:
+                    st.error("Invalid JSON response from API")
+                    st.sidebar.write(f"Raw response: {response.text[:500]}...")  # Show first 500 chars
+                    return None
             else:
-                st.error(f"Error fetching data: {response.status_code}")
+                st.error(f"API Error: {response.status_code}")
+                st.sidebar.write(f"Error response: {response.text}")
                 return None
+                
         except Exception as e:
-            st.error(f"Connection error: {str(e)}")
+            st.error(f"Data fetch error: {str(e)}")
             return None
+
+def process_sales_data(data):
+    """Process raw sales data into a DataFrame"""
+    try:
+        if not data or not isinstance(data, list):
+            st.warning("No valid data to process")
+            return None
+            
+        # Extract relevant fields
+        processed_data = []
+        for invoice in data:
+            # Extract basic invoice info
+            invoice_info = {
+                'date': invoice.get('date'),
+                'total': invoice.get('total', 0),
+                'status': invoice.get('status'),
+                'id': invoice.get('id')
+            }
+            
+            # Extract line items
+            items = invoice.get('items', [])
+            for item in items:
+                item_info = invoice_info.copy()
+                item_info.update({
+                    'productId': item.get('productId'),
+                    'quantity': item.get('units', 0),
+                    'item_total': item.get('subtotal', 0)
+                })
+                processed_data.append(item_info)
+        
+        df = pd.DataFrame(processed_data)
+        
+        # Convert date
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Debug information
+        st.sidebar.write(f"Processed data shape: {df.shape}")
+        st.sidebar.write("Columns found:", df.columns.tolist())
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error processing data: {str(e)}")
+        return None
 
 def main():
     # Initialize session state
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
         st.session_state.api_key = None
+
+    # Add debug mode toggle
+    debug_mode = st.sidebar.checkbox("Debug Mode")
 
     # Logout handler
     if st.sidebar.button("Logout"):
@@ -115,10 +183,10 @@ def main():
             else:
                 st.warning("Please enter your API key")
         
-        st.markdown("""
-        ### Need Help?
-        - To find your API key, log into Holded and go to Settings > API
-        - For support, contact your system administrator
+        # Show API key format hint
+        st.info("""
+        💡 Your API key should look like: 'xx-xxxxxxxxxxxxxxxxxxxxx'
+        Find it in Holded under: Settings → Developer tools → API Keys
         """)
         
         return
@@ -150,176 +218,20 @@ def main():
         )
 
     if sales_data:
-        try:
-            # Convert to DataFrame
-            df = pd.DataFrame(sales_data)
+        # Process data
+        df = process_sales_data(sales_data)
+        
+        if df is not None and not df.empty:
+            # Rest of your dashboard code...
+            st.success("Data loaded successfully!")
             
-            # Dashboard tabs
-            tab1, tab2, tab3 = st.tabs([
-                "📈 Sales Overview",
-                "🔍 Product Analysis",
-                "🎯 Forecasting"
-            ])
-            
-            with tab1:
-                st.subheader("Sales Overview")
-                
-                # Key metrics
-                metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
-                with metrics_col1:
-                    total_sales = df['total'].sum() if 'total' in df.columns else 0
-                    st.metric(
-                        "Total Sales",
-                        f"${total_sales:,.2f}"
-                    )
-                with metrics_col2:
-                    avg_order = df['total'].mean() if 'total' in df.columns else 0
-                    st.metric(
-                        "Average Order Value",
-                        f"${avg_order:,.2f}"
-                    )
-                with metrics_col3:
-                    st.metric(
-                        "Number of Orders",
-                        len(df)
-                    )
-                
-                # Sales trend
-                if 'date' in df.columns and 'total' in df.columns:
-                    daily_sales = df.groupby(pd.to_datetime(df['date']).dt.date)['total'].sum()
-                    fig = px.line(
-                        daily_sales,
-                        title="Daily Sales Trend",
-                        labels={"value": "Sales ($)", "date": "Date"}
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("Required columns not found in the data")
-
-            with tab2:
-                st.subheader("Product Analysis")
-                
-                if 'productId' in df.columns:
-                    # Product selector
-                    products = df['productId'].unique()
-                    selected_product = st.selectbox(
-                        "Select Product",
-                        products
-                    )
-                    
-                    # Product metrics
-                    product_data = df[df['productId'] == selected_product]
-                    
-                    prod_col1, prod_col2 = st.columns(2)
-                    with prod_col1:
-                        st.metric(
-                            "Product Total Sales",
-                            f"${product_data['total'].sum():,.2f}"
-                        )
-                    with prod_col2:
-                        if 'quantity' in product_data.columns:
-                            st.metric(
-                                "Units Sold",
-                                product_data['quantity'].sum()
-                            )
-                    
-                    # Product sales trend
-                    if 'date' in product_data.columns and 'quantity' in product_data.columns:
-                        product_daily = product_data.groupby(
-                            pd.to_datetime(product_data['date']).dt.date
-                        )['quantity'].sum()
-                        
-                        fig = px.line(
-                            product_daily,
-                            title=f"Daily Sales Trend - {selected_product}",
-                            labels={"value": "Units Sold", "date": "Date"}
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("Product information not found in the data")
-
-            with tab3:
-                st.subheader("Sales Forecasting")
-                
-                if 'date' in df.columns and 'quantity' in df.columns:
-                    # Forecast period selector
-                    forecast_periods = st.slider(
-                        "Forecast Periods (months)",
-                        min_value=1,
-                        max_value=12,
-                        value=3
-                    )
-                    
-                    if st.button("Generate Forecast"):
-                        with st.spinner("Generating forecast..."):
-                            try:
-                                # Prepare data for forecasting
-                                monthly_sales = df.groupby(
-                                    pd.to_datetime(df['date']).dt.to_period('M')
-                                )['quantity'].sum()
-                                
-                                if len(monthly_sales) > 12:  # Need enough data for seasonal model
-                                    # Fit SARIMA model
-                                    model = SARIMAX(
-                                        monthly_sales,
-                                        order=(1, 1, 1),
-                                        seasonal_order=(1, 1, 1, 12)
-                                    )
-                                    results = model.fit(disp=False)
-                                    
-                                    # Generate forecast
-                                    forecast = results.forecast(forecast_periods)
-                                    
-                                    # Plot results
-                                    fig = go.Figure()
-                                    
-                                    # Historical data
-                                    fig.add_trace(go.Scatter(
-                                        x=monthly_sales.index.astype(str),
-                                        y=monthly_sales.values,
-                                        name="Historical",
-                                        line=dict(color="blue")
-                                    ))
-                                    
-                                    # Forecast
-                                    fig.add_trace(go.Scatter(
-                                        x=forecast.index.astype(str),
-                                        y=forecast.values,
-                                        name="Forecast",
-                                        line=dict(color="red", dash="dash")
-                                    ))
-                                    
-                                    fig.update_layout(
-                                        title="Sales Forecast",
-                                        xaxis_title="Date",
-                                        yaxis_title="Units",
-                                        hovermode="x unified"
-                                    )
-                                    
-                                    st.plotly_chart(fig, use_container_width=True)
-                                    
-                                    # Download forecast
-                                    forecast_df = pd.DataFrame({
-                                        "Date": forecast.index.astype(str),
-                                        "Predicted_Sales": forecast.values
-                                    })
-                                    
-                                    st.download_button(
-                                        label="Download Forecast",
-                                        data=forecast_df.to_csv(index=False),
-                                        file_name="sales_forecast.csv",
-                                        mime="text/csv"
-                                    )
-                                else:
-                                    st.warning("Not enough historical data for seasonal forecasting. Need at least 12 months of data.")
-                            except Exception as e:
-                                st.error(f"Error generating forecast: {str(e)}")
-                else:
-                    st.warning("Required data for forecasting not found")
-
-        except Exception as e:
-            st.error(f"Error processing data: {str(e)}")
-            st.write("Please check the structure of your Holded data")
+            # Show raw data in debug mode
+            if debug_mode:
+                st.subheader("Raw Data Sample")
+                st.write(df.head())
+                st.write("Data Shape:", df.shape)
+        else:
+            st.warning("No data available for the selected date range")
     else:
         st.warning("No data available for the selected date range")
 
